@@ -35,6 +35,10 @@ export function isRequiredDay(date: Date, habit: Habit): boolean {
   return habit.frequency_days?.includes(dow) ?? false;
 }
 
+function isCheckedAt(habit: Habit, logs: HabitLog[], date: string): boolean {
+  return logs.some((log) => log.habit_id === habit.id && log.checked_at === date);
+}
+
 function calculateCurrentStreak(habit: Habit, logs: HabitLog[]): number {
   let streak = 0;
   const cursor = new Date();
@@ -123,8 +127,10 @@ export const useHabitStore = defineStore('habit', {
     todayStats(state) {
       const today = new Date();
       const todayKey = dateKey(today);
-      const active = state.habits.filter((habit) => !habit.is_archived && isRequiredDay(today, habit));
-      const checked = active.filter((habit) => state.logs.some((log) => log.habit_id === habit.id && log.checked_at === todayKey)).length;
+      const active = state.habits.filter(
+        (habit) => !habit.is_archived && (isRequiredDay(today, habit) || isCheckedAt(habit, state.logs, todayKey))
+      );
+      const checked = active.filter((habit) => isCheckedAt(habit, state.logs, todayKey)).length;
       return { total: active.length, checked, percentage: active.length ? Math.round((checked / active.length) * 100) : 0 };
     },
     habitsWithStats(state): HabitWithStats[] {
@@ -132,11 +138,12 @@ export const useHabitStore = defineStore('habit', {
     },
     habitsGrouped(state): { pending: HabitWithStats[]; checked: HabitWithStats[]; notToday: HabitWithStats[] } {
       const today = new Date();
+      const todayKey = dateKey(today);
       const all = state.habits.filter((habit) => !habit.is_archived).map((habit) => buildHabitStats(habit, state.logs));
       return {
         pending: all.filter((habit) => isRequiredDay(today, habit) && !habit.todayChecked),
-        checked: all.filter((habit) => isRequiredDay(today, habit) && habit.todayChecked),
-        notToday: all.filter((habit) => !isRequiredDay(today, habit))
+        checked: all.filter((habit) => isCheckedAt(habit, state.logs, todayKey)),
+        notToday: all.filter((habit) => !isRequiredDay(today, habit) && !isCheckedAt(habit, state.logs, todayKey))
       };
     }
   },

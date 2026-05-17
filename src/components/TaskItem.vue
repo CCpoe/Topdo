@@ -129,22 +129,16 @@
           </button>
           <span class="edit-title">任务详情</span>
           <div class="detail-more-wrap">
-            <button type="button" class="more-btn" @click.stop="detailMenuVisible = !detailMenuVisible">
-              <Icon name="more-horizontal" :size="18" />
+            <button type="button" class="edit-action-btn" @click.stop="saveDetailDrafts">
+              保存
             </button>
-            <div v-if="detailMenuVisible" class="detail-menu">
-              <button v-if="statusKey !== 'in_progress'" type="button" @click="markStatusFromMenu('进行中')">标记为进行中</button>
-              <button v-if="statusKey !== 'completed'" type="button" @click="markStatusFromMenu('已完成')">标记完成</button>
-              <button type="button" @click="duplicateTask">复制任务</button>
-              <button type="button" class="danger" @click="deleteFromDetailMenu">删除任务</button>
-            </div>
           </div>
         </header>
 
         <div class="task-status-bar">
-          <span class="status-dot" :class="statusDotClass"></span>
-          <span class="status-label">{{ statusLabel }}</span>
-          <span class="status-priority" :class="priorityToneClass">{{ priorityDraft }}</span>
+          <span class="detail-badge" :class="statusBadgeClass">{{ statusLabel }}</span>
+          <span v-if="isOverdue" class="detail-badge detail-badge--overdue">已过期</span>
+          <span class="detail-badge" :class="priorityBadgeClass">{{ priorityDraft }}</span>
         </div>
 
         <div class="detail-body task-scrollbar">
@@ -208,6 +202,15 @@
             <div class="detail-option-content">
               <span class="detail-option-label">子任务 ({{ subTaskDone }}/{{ subTaskTotal }})</span>
               <div class="detail-subtask-section">
+                <div v-if="subTaskTotal > 0" class="detail-progress">
+                  <div class="detail-progress-head">
+                    <span>完成进度</span>
+                    <span>{{ subTaskDone }}/{{ subTaskTotal }}</span>
+                  </div>
+                  <div class="detail-progress-bar">
+                    <span :style="{ width: `${subTaskProgress}%` }"></span>
+                  </div>
+                </div>
                 <ul v-if="subTasks.length" class="detail-subtask-list">
                   <li v-for="item in subTasks" :key="item.id" class="detail-subtask-item">
                     <button type="button" class="detail-subtask-checkbox" :class="{ checked: item.done }" @click="toggleSubTask(item.id)"></button>
@@ -217,6 +220,7 @@
                       :class="{ done: item.done }"
                       placeholder="子任务名称"
                       @change="updateSubTaskText(item.id, inputValue($event))"
+                      @keydown.enter.prevent="updateSubTaskText(item.id, inputValue($event))"
                     />
                     <button type="button" class="detail-subtask-delete" title="删除子任务" @click="deleteSubTask(item.id)">×</button>
                   </li>
@@ -312,7 +316,6 @@ const recurrenceDraft = ref<RecurrenceRule | null>(props.task.recurrence_rule ||
 const reminderDraft = ref<number | null>(props.task.reminder_before ?? null);
 const isEditingDate = ref(false);
 const selectedDateOption = ref<string | number | null>(initialDueParts.date || null);
-const detailMenuVisible = ref(false);
 const statusAnimating = ref(false);
 const menuVisible = ref(false);
 const menuX = ref(0);
@@ -343,7 +346,9 @@ const searchQueryTrimmed = computed(() => store.searchQuery.trim());
 const subTasks = computed(() => props.task.sub_tasks || []);
 const subTaskTotal = computed(() => subTasks.value.length);
 const subTaskDone = computed(() => subTasks.value.filter((item) => item.done).length);
+const subTaskProgress = computed(() => subTaskTotal.value ? Math.round((subTaskDone.value / subTaskTotal.value) * 100) : 0);
 const dueDateInfo = computed(() => formatDueDateLabel(props.task.due_date || ''));
+const isOverdue = computed(() => dueDateInfo.value?.tone === 'overdue' && statusKey.value !== 'completed');
 const recurrenceText = computed(() => recurrenceLabel(props.task.recurrence_rule));
 const statusLabel = computed(() => displayStatus(props.task.status));
 const statusDotClass = computed(() => {
@@ -355,6 +360,16 @@ const priorityToneClass = computed(() => {
   if (priorityDraft.value === '紧急') return 'urgent';
   if (priorityDraft.value === '重要') return 'important';
   return 'normal';
+});
+const statusBadgeClass = computed(() => {
+  if (statusKey.value === 'completed') return 'detail-badge--done';
+  if (statusKey.value === 'in_progress') return 'detail-badge--progress';
+  return 'detail-badge--todo';
+});
+const priorityBadgeClass = computed(() => {
+  if (priorityDraft.value === '紧急') return 'detail-badge--urgent';
+  if (priorityDraft.value === '重要') return 'detail-badge--important';
+  return 'detail-badge--normal';
 });
 const formattedDueDate = computed(() => {
   if (!dueDateDraft.value) return '无截止日期';
@@ -482,20 +497,6 @@ watch(
     reminderDraft.value = next ?? null;
   }
 );
-
-watch(recurrenceDraft, (next) => {
-  void store.updateTaskRecurrence(props.task.record_id, next).catch((error) => {
-    recurrenceDraft.value = props.task.recurrence_rule || null;
-    emit('error', `重复设置保存失败：${String(error)}`);
-  });
-}, { deep: true });
-
-watch(reminderDraft, (next) => {
-  void store.updateTaskReminder(props.task.record_id, next).catch((error) => {
-    reminderDraft.value = props.task.reminder_before ?? null;
-    emit('error', `提醒设置保存失败：${String(error)}`);
-  });
-});
 
 onBeforeUnmount(() => {
   if (notesTimer) clearTimeout(notesTimer);
@@ -846,7 +847,7 @@ async function saveSubTasks(next: SubTask[]) {
   }
 }
 
-function addSubTask() {
+async function addSubTask() {
   const text = newSubTaskText.value.trim();
   if (!text) return;
   const item: SubTask = {
@@ -856,7 +857,7 @@ function addSubTask() {
     created_at: Math.floor(Date.now() / 1000).toString()
   };
   newSubTaskText.value = '';
-  void saveSubTasks([...subTasks.value, item]);
+  await saveSubTasks([...subTasks.value, item]);
 }
 
 function toggleSubTask(id: string) {
@@ -905,12 +906,28 @@ function onContextDelete() {
 }
 
 function handleBack() {
-  detailMenuVisible.value = false;
   expanded.value = false;
 }
 
+async function saveDetailDrafts() {
+  try {
+    if (notesTimer) {
+      clearTimeout(notesTimer);
+      notesTimer = null;
+    }
+    await onNameCommit();
+    await onPriorityCommit();
+    await store.updateTaskDueDate(props.task.record_id, buildDueDateValue(dueDateDraft.value, dueTimeDraft.value));
+    await store.updateTaskRecurrence(props.task.record_id, recurrenceDraft.value);
+    await store.updateTaskReminder(props.task.record_id, reminderDraft.value);
+    await addSubTask();
+    await store.updateTaskNotes(props.task.record_id, notesDraft.value);
+  } catch (error) {
+    emit('error', `任务保存失败：${String(error)}`);
+  }
+}
+
 async function markStatusFromMenu(status: string) {
-  detailMenuVisible.value = false;
   try {
     await store.updateTaskStatus(props.task.record_id, status);
   } catch (error) {
@@ -919,7 +936,6 @@ async function markStatusFromMenu(status: string) {
 }
 
 async function duplicateTask() {
-  detailMenuVisible.value = false;
   try {
     await store.createTask({
       name: `${props.task.name || '未命名任务'} 副本`,
@@ -941,7 +957,6 @@ async function duplicateTask() {
 }
 
 function deleteFromDetailMenu() {
-  detailMenuVisible.value = false;
   emit('request-delete', props.task);
 }
 
@@ -1447,7 +1462,7 @@ defineExpose({
 
 .task-detail-panel {
   margin: 8px 10px 10px;
-  max-height: min(560px, calc(100vh - 132px));
+  max-height: min(540px, calc(100vh - 132px));
   display: flex;
   flex-direction: column;
   font-size: 14px;
@@ -1459,8 +1474,8 @@ defineExpose({
 }
 
 .edit-header {
-  height: 48px;
-  padding: 0 16px;
+  height: 44px;
+  padding: 0 14px;
   flex-shrink: 0;
   display: flex;
   align-items: center;
@@ -1481,12 +1496,12 @@ defineExpose({
   align-items: center;
   gap: 4px;
   color: var(--accent-blue);
-  font-size: 14px;
+  font-size: 12px;
   font-weight: 650;
 }
 
 .edit-title {
-  font-size: 16px;
+  font-size: 14px;
   font-weight: 700;
   color: var(--text-primary);
 }
@@ -1507,6 +1522,16 @@ defineExpose({
 .more-btn:hover {
   background: var(--bg-secondary);
   color: var(--text-primary);
+}
+
+.edit-action-btn {
+  border: 0;
+  background: transparent;
+  color: var(--accent-blue);
+  font-family: var(--font-family);
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
 }
 
 .detail-menu {
@@ -1545,14 +1570,57 @@ defineExpose({
 }
 
 .task-status-bar {
-  height: 38px;
+  min-height: 34px;
   flex-shrink: 0;
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 0 16px;
+  gap: 5px;
+  padding: 7px 14px;
   border-bottom: 1px solid var(--border-light);
-  background: var(--bg-secondary);
+  background: var(--bg-solid);
+}
+
+.detail-badge {
+  display: inline-flex;
+  align-items: center;
+  min-height: 17px;
+  padding: 2px 7px;
+  border-radius: 5px;
+  font-size: 9px;
+  font-weight: 650;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.detail-badge--progress {
+  color: #007aff;
+  background: rgba(0, 122, 255, 0.08);
+}
+
+.detail-badge--todo {
+  color: #8e8e93;
+  background: #f5f5f7;
+}
+
+.detail-badge--done {
+  color: #34c759;
+  background: rgba(52, 199, 89, 0.08);
+}
+
+.detail-badge--overdue,
+.detail-badge--urgent {
+  color: #ff3b30;
+  background: #fff2f2;
+}
+
+.detail-badge--important {
+  color: #007aff;
+  background: #f0f7ff;
+}
+
+.detail-badge--normal {
+  color: #8e8e93;
+  background: #f5f5f7;
 }
 
 .status-dot {
@@ -1597,11 +1665,11 @@ defineExpose({
   min-height: 0;
   flex: 1;
   overflow-y: auto;
-  padding: 16px;
+  padding: 14px 16px;
 }
 
 .task-input-area {
-  margin-bottom: 20px;
+  margin-bottom: 12px;
 }
 
 .detail-name-input {
@@ -1611,14 +1679,14 @@ defineExpose({
   background: transparent;
   color: var(--text-primary);
   font-family: var(--font-family);
-  font-size: 17px;
+  font-size: 15px;
   font-weight: 500;
   line-height: 1.35;
 }
 
 .input-divider {
   height: 2px;
-  margin-top: 12px;
+  margin-top: 6px;
   border-radius: 999px;
   background: linear-gradient(90deg, var(--accent-blue), var(--accent-blue-light));
 }
@@ -1626,8 +1694,8 @@ defineExpose({
 .detail-option-row {
   display: flex;
   align-items: flex-start;
-  gap: 12px;
-  padding: 13px 0;
+  gap: 8px;
+  padding: 9px 0;
   border-bottom: 1px solid var(--border-light);
 }
 
@@ -1636,13 +1704,13 @@ defineExpose({
 }
 
 .detail-option-icon {
-  width: 32px;
-  height: 32px;
+  width: 22px;
+  height: 22px;
   margin-top: 1px;
   flex: 0 0 auto;
   display: grid;
   place-items: center;
-  border-radius: 9px;
+  border-radius: 11px;
 }
 
 .detail-option-icon--blue { color: var(--accent-blue); background: var(--accent-blue-soft); }
@@ -1656,31 +1724,90 @@ defineExpose({
   min-width: 0;
   flex: 1;
   display: grid;
-  gap: 10px;
+  gap: 6px;
 }
 
 .detail-option-label {
-  font-size: 14px;
+  font-size: 10px;
   font-weight: 500;
-  color: var(--text-primary);
+  color: var(--text-secondary);
 }
 
 .task-detail-panel :deep(.chip-selector) {
-  flex-wrap: nowrap;
-  gap: 8px;
+  flex-wrap: wrap;
+  gap: 5px;
 }
 
 .task-detail-panel :deep(.chip-selector__item) {
-  min-height: 28px;
-  padding: 5px 12px;
+  min-height: 22px;
+  padding: 4px 9px;
   white-space: nowrap;
-  font-size: 13px;
+  font-size: 11px;
 }
 
 .task-detail-panel :deep(.chip-selector--compact .chip-selector__item) {
-  min-height: 26px;
-  padding: 5px 11px;
-  font-size: 12px;
+  min-height: 22px;
+  padding: 4px 9px;
+  font-size: 11px;
+}
+
+.task-detail-panel :deep(.recurrence-panel),
+.task-detail-panel :deep(.reminder-section) {
+  gap: 6px;
+  color: var(--text-secondary);
+  font-size: 11px;
+}
+
+.task-detail-panel :deep(.recurrence-header) {
+  min-height: 22px;
+  gap: 8px;
+  color: var(--text-secondary);
+  font-size: 11px;
+  font-weight: 500;
+}
+
+.task-detail-panel :deep(.recurrence-summary) {
+  color: var(--text-secondary);
+  font-size: 11px;
+  font-weight: 500;
+}
+
+.task-detail-panel :deep(.switch) {
+  width: 30px;
+  height: 18px;
+  padding: 2px;
+}
+
+.task-detail-panel :deep(.switch i) {
+  width: 14px;
+  height: 14px;
+}
+
+.task-detail-panel :deep(.switch.on i) {
+  transform: translateX(12px);
+}
+
+.task-detail-panel :deep(.recurrence-body) {
+  gap: 7px;
+  padding: 8px;
+  border-radius: 10px;
+}
+
+.task-detail-panel :deep(.recurrence-section-title),
+.task-detail-panel :deep(.end-block > span) {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0;
+}
+
+.task-detail-panel :deep(.weekday-row) {
+  gap: 5px;
+}
+
+.task-detail-panel :deep(.weekday-row button) {
+  width: 24px;
+  height: 24px;
+  font-size: 10px;
 }
 
 .date-time-display {
@@ -1692,9 +1819,9 @@ defineExpose({
 
 .date-badge,
 .time-badge {
-  padding: 5px 10px;
-  border-radius: 7px;
-  font-size: 13px;
+  padding: 3px 8px;
+  border-radius: 5px;
+  font-size: 11px;
   font-weight: 600;
 }
 
@@ -1717,34 +1844,65 @@ defineExpose({
 
 .date-edit-inputs {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 96px auto;
-  gap: 8px;
+  grid-template-columns: minmax(0, 1.35fr) minmax(96px, 0.9fr);
+  gap: 8px 10px;
 }
 
 .date-edit-inputs input,
 .date-edit-inputs button {
-  height: 32px;
+  height: 40px;
   border: 1px solid var(--border);
-  border-radius: 9px;
+  border-radius: 10px;
   background: var(--bg-solid);
   color: var(--text-primary);
   font-family: var(--font-family);
-  font-size: 14px;
+  font-size: 15px;
 }
 
 .date-edit-inputs input {
   min-width: 0;
-  padding: 0 9px;
+  width: 100%;
+  padding: 0 12px;
 }
 
 .date-edit-inputs button {
-  padding: 0 10px;
+  grid-column: 1 / -1;
+  justify-self: end;
+  min-width: 76px;
+  height: 32px;
+  padding: 0 12px;
   cursor: pointer;
   color: var(--text-secondary);
 }
 
 .detail-subtask-section {
   margin-top: 2px;
+}
+
+.detail-progress {
+  margin-bottom: 7px;
+}
+
+.detail-progress-head {
+  margin-bottom: 3px;
+  display: flex;
+  justify-content: space-between;
+  color: var(--text-tertiary);
+  font-size: 9px;
+}
+
+.detail-progress-bar {
+  height: 3px;
+  overflow: hidden;
+  border-radius: 2px;
+  background: #f0f0f0;
+}
+
+.detail-progress-bar span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: #34c759;
 }
 
 .detail-subtask-list {
@@ -1756,8 +1914,8 @@ defineExpose({
 .detail-subtask-item {
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 8px 0;
+  gap: 6px;
+  padding: 5px 0;
   border-bottom: 1px solid var(--border-light);
 }
 
@@ -1766,8 +1924,8 @@ defineExpose({
 }
 
 .detail-subtask-checkbox {
-  width: 18px;
-  height: 18px;
+  width: 14px;
+  height: 14px;
   position: relative;
   flex-shrink: 0;
   border-radius: 50%;
@@ -1784,10 +1942,10 @@ defineExpose({
 .detail-subtask-checkbox.checked::after {
   content: '';
   position: absolute;
-  left: 5px;
-  top: 2px;
-  width: 5px;
-  height: 9px;
+  left: 4px;
+  top: 1px;
+  width: 4px;
+  height: 8px;
   border: solid white;
   border-width: 0 2px 2px 0;
   transform: rotate(45deg);
@@ -1801,7 +1959,7 @@ defineExpose({
   background: transparent;
   color: var(--text-primary);
   font-family: var(--font-family);
-  font-size: 14px;
+  font-size: 11px;
 }
 
 .detail-subtask-input.done {
@@ -1834,19 +1992,22 @@ defineExpose({
 .detail-subtask-add {
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 10px 0;
+  gap: 6px;
+  padding: 6px 0;
   color: var(--text-tertiary);
 }
 
 .detail-subtask-add-icon {
   width: 18px;
   height: 18px;
-  display: grid;
-  place-items: center;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   border-radius: 50%;
   border: 1.5px dashed var(--text-placeholder);
-  font-size: 12px;
+  box-sizing: border-box;
+  font-size: 13px;
+  line-height: 1;
 }
 
 .detail-subtask-add input {
@@ -1857,7 +2018,7 @@ defineExpose({
   background: transparent;
   color: var(--text-primary);
   font-family: var(--font-family);
-  font-size: 14px;
+  font-size: 11px;
 }
 
 .detail-subtask-add:focus-within,
@@ -1872,14 +2033,14 @@ defineExpose({
 
 .detail-note-textarea {
   width: 100%;
-  min-height: 72px;
-  padding: 12px;
+  min-height: 50px;
+  padding: 7px 9px;
   border: 1px solid var(--border);
   border-radius: 8px;
   background: var(--bg-secondary);
   color: var(--text-primary);
   font-family: var(--font-family);
-  font-size: 14px;
+  font-size: 11px;
   line-height: 1.5;
   resize: vertical;
   outline: none;
@@ -1895,7 +2056,7 @@ defineExpose({
   align-items: center;
   justify-content: space-between;
   gap: 10px;
-  font-size: 11px;
+  font-size: 9px;
   color: var(--text-tertiary);
 }
 
@@ -1903,12 +2064,12 @@ defineExpose({
 .note-footer .error { color: var(--accent-red); }
 
 .detail-meta-info {
-  margin-top: 16px;
-  padding-top: 12px;
+  margin-top: 10px;
+  padding-top: 8px;
   display: grid;
-  gap: 5px;
+  gap: 4px;
   border-top: 1px solid var(--border-light);
-  font-size: 12px;
+  font-size: 10px;
   color: var(--text-tertiary);
 }
 
